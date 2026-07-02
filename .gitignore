@@ -1,0 +1,23 @@
+# Binaries & build output
+/bin/
+/aimgen
+*.exe
+*.test
+*.out
+/coverage.out
+
+# Generated images
+*.png
+*.jpeg
+*.jpg
+*.webp
+
+# Go workspace
+go.work
+go.work.sum
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
