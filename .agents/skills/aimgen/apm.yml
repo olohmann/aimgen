@@ -1,0 +1,4 @@
+name: aimgen
+version: 0.1.0
+description: Text-to-image generation via the Azure AI Foundry images endpoint.
+license: MIT

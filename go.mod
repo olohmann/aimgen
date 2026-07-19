@@ -1,4 +1,4 @@
-module aimgen
+module github.com/olohmann/aimgen
 
 go 1.25.9
 
