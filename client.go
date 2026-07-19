@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -95,6 +98,108 @@ func (c *client) generate(ctx context.Context, prompt string) ([][]byte, error) 
 	}
 	defer resp.Body.Close()
 
+	return decodeImageResponse(resp)
+}
+
+// edit posts one or more input images plus a prompt to the edits endpoint and
+// returns the decoded image bytes for each result. An optional mask enables
+// inpainting. It builds a multipart/form-data body mirroring the generation
+// parameters (model, size, count, format) so behavior is consistent across modes.
+func (c *client) edit(ctx context.Context, prompt string, imagePaths []string, maskPath string) ([][]byte, error) {
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+
+	fields := map[string]string{
+		"prompt":             prompt,
+		"model":              c.cfg.Model,
+		"size":               c.cfg.Size,
+		"n":                  strconv.Itoa(c.cfg.Count),
+		"output_format":      c.cfg.Format,
+		"output_compression": strconv.Itoa(c.cfg.Compression),
+	}
+	for k, v := range fields {
+		if err := mw.WriteField(k, v); err != nil {
+			return nil, err
+		}
+	}
+
+	// Single image uses the "image" field; multiple images use "image[]".
+	imageField := "image"
+	if len(imagePaths) > 1 {
+		imageField = "image[]"
+	}
+	for _, p := range imagePaths {
+		if err := addFilePart(mw, imageField, p); err != nil {
+			return nil, err
+		}
+	}
+	if maskPath != "" {
+		if err := addFilePart(mw, "mask", maskPath); err != nil {
+			return nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return nil, err
+	}
+
+	url := strings.TrimRight(c.cfg.Endpoint, "/") + c.cfg.EditPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return decodeImageResponse(resp)
+}
+
+// addFilePart streams a file into the multipart writer under the given field
+// name, setting a content type inferred from the file extension.
+func addFilePart(mw *multipart.Writer, field, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", path, err)
+	}
+	defer f.Close()
+
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, field, filepath.Base(path)))
+	h.Set("Content-Type", contentTypeFor(path))
+	part, err := mw.CreatePart(h)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	return nil
+}
+
+// contentTypeFor returns the MIME type for a supported image extension,
+// defaulting to application/octet-stream for unknown extensions.
+func contentTypeFor(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// decodeImageResponse reads an image endpoint response, mapping non-2xx status
+// to a structured apiErr and decoding each base64 image payload. It is shared by
+// the generate and edit paths, which return the same response shape.
+func decodeImageResponse(resp *http.Response) ([][]byte, error) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err

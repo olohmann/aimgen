@@ -10,8 +10,19 @@ ifeq ($(INSTALL_DIR),)
 INSTALL_DIR := $(shell $(GO) env GOPATH)/bin
 endif
 
-# Inject version/commit/date into the binary if those vars are defined later.
-LDFLAGS ?=
+# Version metadata, derived from git and injected at build time. A dirty working
+# tree gets a "-dirty" suffix automatically; an untagged tree falls back to the
+# dev version. Override VERSION on the command line or in CI as needed.
+GIT_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.9.0-dev)
+VERSION     ?= $(patsubst v%,%,$(GIT_VERSION))
+COMMIT      := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE        := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Inject version/commit/date into the binary.
+LDFLAGS ?= -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
+# Platforms built by `make dist` (os/arch).
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
 .DEFAULT_GOAL := help
 
@@ -84,7 +95,38 @@ init-config:
 ## clean: Remove build artifacts.
 .PHONY: clean
 clean:
-	rm -rf bin coverage.out
+	rm -rf bin coverage.out dist
+
+## dist: Cross-compile release archives + checksums into ./dist.
+.PHONY: dist
+dist:
+	@rm -rf dist && mkdir -p dist
+	@echo "Building $(BINARY) $(VERSION) (commit $(COMMIT))"
+	@for platform in $(PLATFORMS); do \
+		os=$${platform%/*}; arch=$${platform#*/}; \
+		ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
+		name="$(BINARY)_$(VERSION)_$${os}_$${arch}"; \
+		stage="dist/$$name"; \
+		echo "  -> $$os/$$arch"; \
+		mkdir -p "$$stage"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath \
+			-ldflags '$(LDFLAGS) -s -w' -o "$$stage/$(BINARY)$$ext" . || exit 1; \
+		cp README.md LICENSE "$$stage/"; \
+		if [ "$$os" = "windows" ]; then \
+			( cd dist && zip -qr "$$name.zip" "$$name" ); \
+		else \
+			tar -czf "dist/$$name.tar.gz" -C dist "$$name"; \
+		fi; \
+		rm -rf "$$stage"; \
+	done
+	@echo "Writing checksums.txt"
+	@( cd dist && \
+		if command -v sha256sum >/dev/null 2>&1; then \
+			sha256sum *.tar.gz *.zip 2>/dev/null > checksums.txt; \
+		else \
+			shasum -a 256 *.tar.gz *.zip 2>/dev/null > checksums.txt; \
+		fi )
+	@echo "Artifacts in ./dist:" && ls -1 dist
 
 ## check: Run the full local gate (lint + test + build).
 .PHONY: check

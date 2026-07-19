@@ -139,6 +139,33 @@ printed to **stdout** (status and errors go to stderr, so piping stays clean).
 If the binary is missing or the token/endpoint is unset, aimgen fails fast with
 a clear message and the skill surfaces it to you.
 
+### Edit or refine an existing image
+
+Pass a source image with `--image` to edit it instead of generating from
+scratch. aimgen then calls the Foundry **image edits** endpoint:
+
+```bash
+# Edit one image
+aimgen --image fox.png -o fox_sunset.png "change the lighting to a warm sunset"
+
+# Inpaint a region with a PNG mask (only the transparent area is regenerated)
+aimgen --image room.png --mask window_mask.png -o room_edit.png "replace the window with a bookshelf"
+
+# Combine / reference multiple inputs (repeat --image)
+aimgen --image logo.png --image mug.png -o mockup.png "print the logo on the mug"
+```
+
+**Multi-turn refinement** is stateless — aimgen keeps no conversation history.
+To iterate, feed each output back in as the next `--image`:
+
+```bash
+aimgen --image fox.png   -o step1.png "make the sky purple"
+aimgen --image step1.png -o step2.png "add a rainbow over the trees"
+```
+
+Because the agent drives the loop, you can just keep asking ("now make it
+darker", "add snow") and the skill chains the calls for you.
+
 ## Reference
 
 ### Configuration precedence
@@ -160,10 +187,13 @@ default.** Default config file: `$XDG_CONFIG_HOME/aimgen/config.toml`
 | Output path   | `-o` / `--out`    | —                        | `generated_image.png` |
 | Timeout (s)   | `--timeout`       | —                        | `120` |
 
-Other flags: `--prompt` (alternative to the positional arg), `--quiet` (no
-spinner), `--verbose` (redacted request/response summary), `--init-config`,
-`--help`. With `-n > 1`, output files become `<stem>_1.png`, `<stem>_2.png`, …
-Run `aimgen --help` for the authoritative flag list.
+Other flags: `--prompt` (alternative to the positional arg), `--image`
+(repeatable; edit an existing image), `--mask` (inpainting mask, requires
+`--image`), `--quiet` (no spinner), `--verbose` (redacted request/response
+summary), `--init-config`, `--help`. With `-n > 1`, output files become
+`<stem>_1.png`, `<stem>_2.png`, … The request paths are configurable in the TOML
+config via `api_path` (generation) and `edit_api_path` (edits). Run
+`aimgen --help` for the authoritative flag list.
 
 ### Exit codes
 

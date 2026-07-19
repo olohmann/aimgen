@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -177,5 +178,147 @@ func TestParseAPIErrorNonJSON(t *testing.T) {
 	}
 	if ae.Error() != "HTTP 500" {
 		t.Errorf("Error() = %q, want HTTP 500", ae.Error())
+	}
+}
+
+func TestContentTypeFor(t *testing.T) {
+	tests := map[string]string{
+		"a.png":          "image/png",
+		"a.PNG":          "image/png",
+		"photo.jpg":      "image/jpeg",
+		"photo.jpeg":     "image/jpeg",
+		"art.webp":       "image/webp",
+		"blob":           "application/octet-stream",
+		"weird.bmp":      "application/octet-stream",
+		"dir/nested.png": "image/png",
+	}
+	for path, want := range tests {
+		if got := contentTypeFor(path); got != want {
+			t.Errorf("contentTypeFor(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestEditSuccess(t *testing.T) {
+	inputBytes := []byte("\x89PNG source image")
+	outBytes := []byte("\x89PNG edited image")
+	encoded := base64.StdEncoding.EncodeToString(outBytes)
+
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "input.png")
+	if err := os.WriteFile(imgPath, inputBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotPath, gotCT, gotPrompt, gotModel string
+	var gotImage []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotCT = r.Header.Get("Content-Type")
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+		}
+		gotPrompt = r.FormValue("prompt")
+		gotModel = r.FormValue("model")
+		if fhs := r.MultipartForm.File["image"]; len(fhs) == 1 {
+			f, _ := fhs[0].Open()
+			gotImage, _ = io.ReadAll(f)
+			f.Close()
+		} else {
+			t.Errorf("image parts = %d, want 1", len(fhs))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{"b64_json": encoded}},
+		})
+	}))
+	defer srv.Close()
+
+	cfg := testConfig(srv.URL)
+	cfg.Model = "gpt-image-2"
+	c := newClient(srv.Client(), cfg)
+
+	images, err := c.edit(context.Background(), "make it blue", []string{imgPath}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(images) != 1 || string(images[0]) != string(outBytes) {
+		t.Fatalf("decoded bytes mismatch: %q", images)
+	}
+	if gotPath != defaultEditPath {
+		t.Errorf("path = %q, want %q", gotPath, defaultEditPath)
+	}
+	if !strings.HasPrefix(gotCT, "multipart/form-data") {
+		t.Errorf("content-type = %q, want multipart/form-data", gotCT)
+	}
+	if gotPrompt != "make it blue" || gotModel != "gpt-image-2" {
+		t.Errorf("prompt=%q model=%q", gotPrompt, gotModel)
+	}
+	if string(gotImage) != string(inputBytes) {
+		t.Errorf("uploaded image bytes mismatch")
+	}
+}
+
+func TestEditMultipleImagesAndMask(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{filepath.Join(dir, "a.png"), filepath.Join(dir, "b.png")}
+	for _, p := range paths {
+		if err := os.WriteFile(p, []byte("img"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	maskPath := filepath.Join(dir, "mask.png")
+	if err := os.WriteFile(maskPath, []byte("mask"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var imageCount, maskCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+		}
+		imageCount = len(r.MultipartForm.File["image[]"])
+		maskCount = len(r.MultipartForm.File["mask"])
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{"b64_json": base64.StdEncoding.EncodeToString([]byte("x"))}},
+		})
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.Client(), testConfig(srv.URL))
+	if _, err := c.edit(context.Background(), "combine", paths, maskPath); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if imageCount != 2 {
+		t.Errorf("image[] parts = %d, want 2", imageCount)
+	}
+	if maskCount != 1 {
+		t.Errorf("mask parts = %d, want 1", maskCount)
+	}
+}
+
+func TestEditAPIError(t *testing.T) {
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "input.png")
+	if err := os.WriteFile(imgPath, []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{"code": "400", "message": "bad image"},
+		})
+	}))
+	defer srv.Close()
+
+	c := newClient(srv.Client(), testConfig(srv.URL))
+	_, err := c.edit(context.Background(), "x", []string{imgPath}, "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if ae, ok := err.(*apiErr); !ok || ae.code != "400" {
+		t.Errorf("error = %v (%T)", err, err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,19 @@ func TestRunHelp(t *testing.T) {
 	}
 	if len(stderr) == 0 {
 		t.Error("expected help text on stderr")
+	}
+}
+
+func TestRunVersion(t *testing.T) {
+	code, stdout, _ := captureRun(t, []string{"--version"}, nil)
+	if code != exitOK {
+		t.Errorf("code = %d, want %d", code, exitOK)
+	}
+	if !strings.HasPrefix(stdout, "aimgen ") {
+		t.Errorf("stdout = %q, want it to start with %q", stdout, "aimgen ")
+	}
+	if !strings.Contains(stdout, version) {
+		t.Errorf("stdout = %q, want it to contain version %q", stdout, version)
 	}
 }
 
@@ -144,6 +158,74 @@ func TestResolvePrompt(t *testing.T) {
 	}
 	if got := resolvePrompt("", nil); got != "" {
 		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestRunMaskWithoutImage(t *testing.T) {
+	code, _, stderr := captureRun(t, []string{"--token", "t", "--mask", "m.png", "a fox"}, nil)
+	if code != exitUsage {
+		t.Errorf("code = %d, want %d", code, exitUsage)
+	}
+	if stderr == "" {
+		t.Error("expected error message")
+	}
+}
+
+func TestRunMissingImageFile(t *testing.T) {
+	code, _, stderr := captureRun(t, []string{"--token", "t", "--image", "/no/such/file.png", "a fox"}, nil)
+	if code != exitUsage {
+		t.Errorf("code = %d, want %d", code, exitUsage)
+	}
+	if stderr == "" {
+		t.Error("expected error message")
+	}
+}
+
+func TestRunEditSuccess(t *testing.T) {
+	inputBytes := []byte("\x89PNG input")
+	outBytes := []byte("\x89PNG edited")
+	encoded := base64.StdEncoding.EncodeToString(outBytes)
+
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{"b64_json": encoded}},
+		})
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	inPath := filepath.Join(dir, "in.png")
+	if err := os.WriteFile(inPath, inputBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(dir, "out.png")
+
+	args := []string{
+		"--endpoint", srv.URL,
+		"--token", "t",
+		"--quiet",
+		"--image", inPath,
+		"-o", outPath,
+		"make it blue",
+	}
+	code, stdout, stderr := captureRun(t, args, nil)
+	if code != exitOK {
+		t.Fatalf("code = %d, want %d (stderr: %s)", code, exitOK, stderr)
+	}
+	if gotPath != defaultEditPath {
+		t.Errorf("server path = %q, want %q", gotPath, defaultEditPath)
+	}
+	if stdout == "" {
+		t.Error("expected output path on stdout")
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("image not written: %v", err)
+	}
+	if string(data) != string(outBytes) {
+		t.Error("image content mismatch")
 	}
 }
 

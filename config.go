@@ -20,6 +20,7 @@ const (
 	defaultCount       = 1
 	defaultCompression = 100
 	defaultAPIPath     = "/openai/v1/images/generations"
+	defaultEditPath    = "/openai/v1/images/edits"
 	defaultTimeout     = 120
 	defaultOutput      = "generated_image.png"
 )
@@ -35,6 +36,7 @@ type Config struct {
 	Count        int    `toml:"n"`
 	Compression  int    `toml:"output_compression"`
 	APIPath      string `toml:"api_path"`
+	EditPath     string `toml:"edit_api_path"`
 	Timeout      int    `toml:"timeout_seconds"`
 }
 
@@ -48,6 +50,7 @@ func defaultConfig() Config {
 		Count:       defaultCount,
 		Compression: defaultCompression,
 		APIPath:     defaultAPIPath,
+		EditPath:    defaultEditPath,
 		Timeout:     defaultTimeout,
 	}
 }
@@ -233,6 +236,9 @@ func applyFileOverrides(c *Config, f Config) {
 	if f.APIPath != "" {
 		c.APIPath = f.APIPath
 	}
+	if f.EditPath != "" {
+		c.EditPath = f.EditPath
+	}
 	if f.Timeout != 0 {
 		c.Timeout = f.Timeout
 	}
@@ -271,6 +277,9 @@ output_compression = 100
 
 # Request path appended to the endpoint.
 api_path = "` + defaultAPIPath + `"
+
+# Request path for image edits (used when --image is provided).
+edit_api_path = "` + defaultEditPath + `"
 
 # HTTP timeout in seconds.
 timeout_seconds = 120
